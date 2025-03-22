@@ -133,43 +133,48 @@
 
 import math
 import multiprocessing
-from collections import defaultdict
 import os
-import io
-
-def round_inf(x):
-    return math.ceil(x * 10) / 10  
+import mmap
 
 def process_chunk(filename, start_offset, end_offset):
     data = {}
     with open(filename, "rb") as f:
-        f.seek(start_offset)
-        if start_offset != 0:
-            f.readline()  # Skip partial line
+        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
         
-        while f.tell() < end_offset:
-            line = f.readline()
-            if not line:
-                break
-            
-            semicolon_pos = line.find(b';')
-            if semicolon_pos == -1:
-                continue
-            
-            city = line[:semicolon_pos]
-            try:
-                score = float(line[semicolon_pos+1:])
-            except ValueError:
-                continue
-            
-            if city not in data:
-                data[city] = [score, score, score, 1]
-            else:
-                entry = data[city]
-                entry[0] = min(entry[0], score)
-                entry[1] = max(entry[1], score)
-                entry[2] += score
-                entry[3] += 1
+        if start_offset != 0:
+            while start_offset < end_offset and mm[start_offset] != ord('\n'):
+                start_offset += 1
+            start_offset += 1
+        
+        end = min(end_offset, len(mm))
+        while end < len(mm) and mm[end] != ord('\n'):
+            end += 1
+        
+        chunk = mm[start_offset:end].split(b'\n')
+        mm.close()
+        
+    for line in chunk:
+        if not line:
+            continue
+        
+        semicolon_pos = line.find(b';')
+        if semicolon_pos == -1:
+            continue
+        
+        city = line[:semicolon_pos]
+        try:
+            score = float(line[semicolon_pos + 1:])
+        except ValueError:
+            continue
+        
+        if city in data:
+            entry = data[city]
+            entry[0] = min(entry[0], score)
+            entry[1] = max(entry[1], score)
+            entry[2] += score
+            entry[3] += 1
+        else:
+            data[city] = [score, score, score, 1]
     
     return data
 
@@ -177,14 +182,14 @@ def merge_data(data_list):
     final = {}
     for data in data_list:
         for city, stats in data.items():
-            if city not in final:
-                final[city] = stats
-            else:
+            if city in final:
                 entry = final[city]
                 entry[0] = min(entry[0], stats[0])
                 entry[1] = max(entry[1], stats[1])
                 entry[2] += stats[2]
                 entry[3] += stats[3]
+            else:
+                final[city] = stats
     return final
 
 def main(input_file_name="testcase.txt", output_file_name="output.txt"):
@@ -204,8 +209,8 @@ def main(input_file_name="testcase.txt", output_file_name="output.txt"):
     out = []
     for city in sorted(final_data.keys()):
         mn, mx, total, count = final_data[city]
-        avg = round_inf(total / count)
-        out.append(f"{city.decode()}={round_inf(mn):.1f}/{avg:.1f}/{round_inf(mx):.1f}\n")
+        avg = math.ceil((total / count) * 10) / 10
+        out.append(f"{city.decode()}={math.ceil(mn * 10) / 10:.1f}/{avg:.1f}/{math.ceil(mx * 10) / 10:.1f}\n")
     
     with open(output_file_name, "w") as f:
         f.writelines(out)
