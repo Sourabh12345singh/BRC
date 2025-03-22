@@ -260,5 +260,3 @@ if __name__ == "__main__":
     stats.print_stats(20)  # Show top 20 slowest functions
     print(stream.getvalue())
 
-
-#hello boys
