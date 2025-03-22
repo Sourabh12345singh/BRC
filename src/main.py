@@ -65,92 +65,93 @@
 # if __name__ == "__main__":
 #     main()
 # # raat ka code 
-import concurrent.futures
 import os
-from collections import defaultdict
 import math
-import mmap
-import io
+from collections import defaultdict
+import concurrent.futures
 
-# Optimal thread count for I/O bound operations
-NUM_THREADS = 2  # Fixed to 2 as this is I/O bound task
+# Helper function to replace lambda for pickle compatibility
+def default_stats():
+    return [math.inf, -math.inf, 0, 0]
 
-def round_to_infinity(x, digits=1):
-    factor = 10 ** digits
-    return math.ceil(x * factor) / factor
-
-def process_chunk(chunk_data):
-    city_scores = defaultdict(list)
-    start, size, mm = chunk_data
-    
-    # Process the chunk using memoryview for faster access
-    view = memoryview(mm[start:start + size]).tobytes()
-    buffer = io.StringIO(view.decode('utf-8'))
-    
-    # Fast line processing
-    for line in buffer:
-        if ';' not in line:
-            continue
-        try:
-            city, score = line.rstrip('\n').split(';', 1)
-            city_scores[city].append(float(score))
-        except (ValueError, IndexError):
-            continue
-    return city_scores
-
-def main(input_file_name="testcase.txt", output_file_name="output.txt"):
-    # Use memory mapping for fastest possible file reading
-    with open(input_file_name, 'rb') as f:
-        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-        file_size = mm.size()
-        
-        # Calculate optimal chunk sizes
-        chunk_size = file_size // NUM_THREADS
-        chunks = []
-        
-        # Create chunk boundaries at newline characters
-        start = 0
-        for i in range(NUM_THREADS - 1):
-            end = start + chunk_size
-            while end < file_size and mm[end] != ord('\n'):
-                end += 1
-            chunks.append((start, end - start, mm))
-            start = end + 1
-        chunks.append((start, file_size - start, mm))
-
-        # Process chunks concurrently
-        results = defaultdict(list)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
-            futures = [executor.submit(process_chunk, chunk) for chunk in chunks]
-            
-            # Aggregate results efficiently
-            for future in concurrent.futures.as_completed(futures):
-                for city, scores in future.result().items():
-                    results[city].extend(scores)
-
-        # Write results efficiently
-        with open(output_file_name, 'w', buffering=io.DEFAULT_BUFFER_SIZE) as out:
-            for city in sorted(results):
-                scores = results[city]
-                if not scores:
+def process_chunk(args):
+    filename, start, end = args
+    city_stats = defaultdict(default_stats)
+    with open(filename, "rb") as f:
+        f.seek(start)
+        buffer = b""
+        while f.tell() < end:
+            buffer += f.read(4096)
+            while True:
+                nl_pos = buffer.find(b'\n')
+                if nl_pos < 0:
+                    break
+                line = buffer[:nl_pos]
+                buffer = buffer[nl_pos+1:]
+                if not line:
                     continue
                 
-                # Calculate statistics in one pass
-                min_val = float('inf')
-                max_val = float('-inf')
-                total = 0
-                count = len(scores)
+                semicolon = line.find(b';')
+                if semicolon < 0:
+                    continue
                 
-                for score in scores:
-                    min_val = min(min_val, score)
-                    max_val = max(max_val, score)
-                    total += score
+                city = line[:semicolon].strip()
+                score_str = line[semicolon+1:].strip()
                 
-                out.write(f"{city}={round_to_infinity(min_val, 1)}/"
-                         f"{round_to_infinity(total/count, 1)}/"
-                         f"{round_to_infinity(max_val, 1)}\n")
+                try:
+                    score = float(score_str)
+                except ValueError:
+                    continue
+                
+                stats = city_stats[city]
+                stats[0] = min(stats[0], score)
+                stats[1] = max(stats[1], score)
+                stats[2] += score
+                stats[3] += 1
+    return city_stats
+
+def main(input_file="testcase.txt", output_file="output.txt"):
+    # Determine file chunks
+    with open(input_file, "rb") as f:
+        file_size = os.fstat(f.fileno()).st_size
+        num_workers = os.cpu_count() or 1
+        chunk_size = file_size // num_workers
+        chunks = []
+        start = 0
         
-        mm.close()
+        for _ in range(num_workers - 1):
+            end_candidate = min(start + chunk_size, file_size)
+            f.seek(end_candidate)
+            while f.read(1) != b'\n' and f.tell() < file_size:
+                pass
+            end = f.tell()
+            chunks.append((input_file, start, end))
+            start = end
+        
+        chunks.append((input_file, start, file_size))
+
+    # Process chunks in parallel
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(process_chunk, chunk) for chunk in chunks]
+        
+        merged = defaultdict(default_stats)
+        for future in concurrent.futures.as_completed(futures):
+            chunk_result = future.result()
+            for city, stats in chunk_result.items():
+                m = merged[city]
+                m[0] = min(m[0], stats[0])
+                m[1] = max(m[1], stats[1])
+                m[2] += stats[2]
+                m[3] += stats[3]
+
+    # Write results
+    round_up = lambda x: math.ceil(x * 10) / 10
+    with open(output_file, "w") as f:
+        for city in sorted(merged.keys()):
+            cmin, cmax, total, count = merged[city]
+            avg = total / count
+            line = f"{city.decode()}={round_up(cmin)}/{round_up(avg)}/{round_up(cmax)}\n"
+            f.write(line)
 
 if __name__ == "__main__":
     main()
