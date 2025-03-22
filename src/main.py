@@ -129,10 +129,12 @@
 
 #1.96 sec wala for 5 million 
 
+
+
 import os
 import subprocess
 
-# Optimized Bash script with pre-sorting, tmpfs, and parallel processing
+# Optimized Bash script (without breaking city-wise calculations)
 bash_script_content = r"""#!/bin/bash
 
 input_file="${1:-testcase.txt}"
@@ -143,12 +145,11 @@ temp_dir="/tmp/sort_tmp"
 mkdir -p "$temp_dir"
 mountpoint -q "$temp_dir" || sudo mount -t tmpfs -o size=2G tmpfs "$temp_dir"
 
-# Step 1: Pre-sort the input by city
+# Step 1: Pre-sort input by city to keep all data together
 sort -T "$temp_dir" --parallel=$(nproc) -t ';' -k1,1 "$input_file" -o "$temp_dir/sorted_input.txt"
 
-# Step 2: Process using optimized AWK logic in parallel
-split -d -n l/$(nproc) "$temp_dir/sorted_input.txt" "$temp_dir/chunk_"
-parallel -j $(nproc) "awk -F ';' '
+# Step 2: Process with optimized AWK logic
+awk -F ';' '
 function ceil(x) { return (x == int(x)) ? x : int(x) + (x > 0) }
 function round_up(val) { return ceil(val * 10) / 10 }
 
@@ -157,28 +158,23 @@ function round_up(val) { return ceil(val * 10) / 10 }
         city = $1
         value = $2 + 0
 
-        if (!(city in data)) {
-            data[city] = value "|" value "|" value "|" 1  # min|max|sum|count
+        if (!(city in min)) {
+            min[city] = max[city] = sum[city] = value
+            count[city] = 1
         } else {
-            split(data[city], stats, "|")
-            if (value < stats[1]) stats[1] = value
-            if (value > stats[2]) stats[2] = value
-            stats[3] += value
-            stats[4]++
-            data[city] = stats[1] "|" stats[2] "|" stats[3] "|" stats[4]
+            if (value < min[city]) min[city] = value
+            if (value > max[city]) max[city] = value
+            sum[city] += value
+            count[city]++
         }
     }
 }
 END {
-    for (city in data) {
-        split(data[city], stats, "|")
-        avg = stats[3] / stats[4]
-        printf \"%s=%.1f/%.1f/%.1f\n\", city, round_up(stats[1]), round_up(avg), round_up(stats[2])
+    for (city in sum) {
+        avg = sum[city] / count[city]
+        printf "%s=%.1f/%.1f/%.1f\n", city, round_up(min[city]), round_up(avg), round_up(max[city])
     }
-}' {} > {}.out" ::: "$temp_dir"/chunk_*
-
-# Step 3: Merge results and final sort
-cat "$temp_dir"/chunk_*.out | sort -T "$temp_dir" --parallel=$(nproc) > "$output_file"
+}' "$temp_dir/sorted_input.txt" | sort -T "$temp_dir" --parallel=$(nproc) > "$output_file"
 
 # Cleanup
 rm -rf "$temp_dir"
