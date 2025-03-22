@@ -71,56 +71,39 @@
 import os
 import subprocess
 
-# Optimized Bash script for handling large datasets
+# Optimized Bash script with performance improvements
 bash_script_content = r"""#!/bin/bash
 
 input_file="${1:-testcase.txt}"
 output_file="${2:-output.txt}"
 
-# Ensure input file exists
-if [ ! -f "$input_file" ]; then
-    echo "Error: Input file '$input_file' not found!"
-    exit 1
-fi
-
-LC_NUMERIC=C gawk -F ';' '
+LC_NUMERIC=C awk -F ';' '
 function ceil(x) { return (x == int(x)) ? x : int(x) + (x > 0) }
 function round_up(val) { return ceil(val * 10) / 10 }
 
 {
-    # Debugging: Print skipped lines
-    if (NF != 2) { print "Skipping (wrong format): " $0 > "/dev/stderr"; next }
-    if ($2 !~ /^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$/) { print "Skipping (invalid number): " $0 > "/dev/stderr"; next }
+    if (NF == 2) {
+        city = $1
+        value = $2 + 0
 
-    city = $1
-    value = $2 + 0
-
-    # Update statistics
-    min[city] = (city in min) ? (value < min[city] ? value : min[city]) : value
-    max[city] = (city in max) ? (value > max[city] ? value : max[city]) : value
-    sum[city] += value
-    count[city]++
+        # Update min, max, sum, and count
+        if (city in min) {
+            if (value < min[city]) min[city] = value
+            if (value > max[city]) max[city] = value
+            sum[city] += value
+            count[city]++
+        } else {
+            min[city] = max[city] = sum[city] = value
+            count[city] = 1
+        }
+    }
 }
 END {
-    if (length(sum) == 0) {
-        print "Error: No valid data found!" > "/dev/stderr"
-        exit 1
-    }
-    
     for (city in sum) {
         avg = sum[city] / count[city]
-        printf "%s=%.1f/%.1f/%.1f\n", 
-            city, 
-            round_up(min[city]), 
-            round_up(avg), 
-            round_up(max[city])
+        printf "%s=%.1f/%.1f/%.1f\n", city, round_up(min[city]), round_up(avg), round_up(max[city])
     }
 }' "$input_file" | sort -T /tmp --parallel=$(nproc) > "$output_file"
-
-if [ ! -s "$output_file" ]; then
-    echo "Error: Output file is empty!"
-    exit 1
-fi
 """
 
 script_name = "script.sh"
@@ -133,7 +116,7 @@ try:
     # Make the script executable
     os.chmod(script_name, 0o755)
 
-    # Execute the script and capture errors
+    # Execute the script
     subprocess.run(["bash", script_name], check=True)
 
 except subprocess.CalledProcessError as e:
