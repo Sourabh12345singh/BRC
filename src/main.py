@@ -128,7 +128,6 @@
 #         os.remove(script_name)
 
 #1.96 sec wala for 5 million 
-
 import math
 import mmap
 import multiprocessing
@@ -141,22 +140,26 @@ def default_city_data():
     return [float('inf'), float('-inf'), 0.0, 0]
 
 def process_chunk(filename, start_offset, end_offset):
+    """Processes a file chunk and extracts min, max, and average for each city."""
     data = defaultdict(default_city_data)
+    
     with open(filename, "rb") as f:
         mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
         size = len(mm)
         
+        # Adjust start to the next line if not at the beginning
         if start_offset != 0:
             while start_offset < size and mm[start_offset] != ord('\n'):
                 start_offset += 1
             start_offset += 1
         
+        # Adjust end to the end of a line
         end = end_offset
         while end < size and mm[end] != ord('\n'):
             end += 1
         if end < size:
             end += 1
-        
+
         chunk = mm[start_offset:end]
         mm.close()
     
@@ -177,14 +180,15 @@ def process_chunk(filename, start_offset, end_offset):
             continue
         
         entry = data[city]
-        entry[0] = min(entry[0], score)
-        entry[1] = max(entry[1], score)
-        entry[2] += score
-        entry[3] += 1
+        entry[0] = min(entry[0], score)  # Min
+        entry[1] = max(entry[1], score)  # Max
+        entry[2] += score                # Sum
+        entry[3] += 1                    # Count
     
     return data
 
 def merge_data(data_list):
+    """Merges data from multiple processes."""
     final = defaultdict(default_city_data)  
     for data in data_list:
         for city, stats in data.items():
@@ -196,31 +200,32 @@ def merge_data(data_list):
     return final
 
 def main(input_file_name="testcase.txt", output_file_name="output.txt"):
-    # Determine file size and split into chunks
+    """Main function to process the file in parallel and write sorted output."""
+    
+    # Get file size
     with open(input_file_name, "rb") as f:
         mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
         file_size = len(mm)
         mm.close()
     
-    num_procs = multiprocessing.cpu_count() * 2  
+    num_procs = min(multiprocessing.cpu_count() * 2, 16)  # Use max 16 threads
     chunk_size = file_size // num_procs
     chunks = [(i * chunk_size, (i + 1) * chunk_size if i < num_procs - 1 else file_size)
               for i in range(num_procs)]
     
-
+    # Parallel processing
     with multiprocessing.Pool(num_procs) as pool:
         tasks = [(input_file_name, start, end) for start, end in chunks]
         results = pool.starmap(process_chunk, tasks)
     
     final_data = merge_data(results)
     
-    out = []
-    for city in sorted(final_data.keys()):
-        mn, mx, total, count = final_data[city]
-        avg = round_inf(total / count)
-        out.append(f"{city.decode()}={round_inf(mn):.1f}/{avg:.1f}/{round_inf(mx):.1f}\n")
-    
-    with open(output_file_name, "w") as f:        f.writelines(out)
+    # Sorting and writing output directly to file (Memory-efficient)
+    with open(output_file_name, "w") as f:
+        for city in sorted(final_data.keys()):
+            mn, mx, total, count = final_data[city]
+            avg = round_inf(total / count)
+            f.write(f"{city.decode()}={round_inf(mn):.1f}/{avg:.1f}/{round_inf(mx):.1f}\n")
 
 if __name__ == "__main__":
-   main()
+    main()
