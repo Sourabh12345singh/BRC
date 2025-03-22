@@ -64,94 +64,90 @@
 
 # if __name__ == "__main__":
 #     main()
+
+
 # # raat ka code 
+
 import os
-import math
-from collections import defaultdict
-import concurrent.futures
+import subprocess
 
-# Helper function to replace lambda for pickle compatibility
-def default_stats():
-    return [math.inf, -math.inf, 0, 0]
+# Optimized Bash script (Sorting in `awk`)
+bash_script_content = r"""#!/bin/bash
 
-def process_chunk(args):
-    filename, start, end = args
-    city_stats = defaultdict(default_stats)
-    with open(filename, "rb") as f:
-        f.seek(start)
-        buffer = b""
-        while f.tell() < end:
-            buffer += f.read(4096)
-            while True:
-                nl_pos = buffer.find(b'\n')
-                if nl_pos < 0:
-                    break
-                line = buffer[:nl_pos]
-                buffer = buffer[nl_pos+1:]
-                if not line:
-                    continue
-                
-                semicolon = line.find(b';')
-                if semicolon < 0:
-                    continue
-                
-                city = line[:semicolon].strip()
-                score_str = line[semicolon+1:].strip()
-                
-                try:
-                    score = float(score_str)
-                except ValueError:
-                    continue
-                
-                stats = city_stats[city]
-                stats[0] = min(stats[0], score)
-                stats[1] = max(stats[1], score)
-                stats[2] += score
-                stats[3] += 1
-    return city_stats
+input_file="${1:-testcase.txt}"
+output_file="${2:-output.txt}"
 
-def main(input_file="testcase.txt", output_file="output.txt"):
-    # Determine file chunks
-    with open(input_file, "rb") as f:
-        file_size = os.fstat(f.fileno()).st_size
-        num_workers = os.cpu_count() or 1
-        chunk_size = file_size // num_workers
-        chunks = []
-        start = 0
-        
-        for _ in range(num_workers - 1):
-            end_candidate = min(start + chunk_size, file_size)
-            f.seek(end_candidate)
-            while f.read(1) != b'\n' and f.tell() < file_size:
-                pass
-            end = f.tell()
-            chunks.append((input_file, start, end))
-            start = end
-        
-        chunks.append((input_file, start, file_size))
+awk -F ';' '
+function ceil(x) {
+    return (x == int(x)) ? x : int(x) + (x > 0)
+}
+function round_up(val) {
+    scaled = val * 10
+    return ceil(scaled) / 10
+}
 
-    # Process chunks in parallel
-    with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = [executor.submit(process_chunk, chunk) for chunk in chunks]
-        
-        merged = defaultdict(default_stats)
-        for future in concurrent.futures.as_completed(futures):
-            chunk_result = future.result()
-            for city, stats in chunk_result.items():
-                m = merged[city]
-                m[0] = min(m[0], stats[0])
-                m[1] = max(m[1], stats[1])
-                m[2] += stats[2]
-                m[3] += stats[3]
+{
+    # Skip invalid lines (exactly two fields required)
+    if (NF != 2) next
+    if ($2 !~ /^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$/) next
 
-    # Write results
-    round_up = lambda x: math.ceil(x * 10) / 10
-    with open(output_file, "w") as f:
-        for city in sorted(merged.keys()):
-            cmin, cmax, total, count = merged[city]
-            avg = total / count
-            line = f"{city.decode()}={round_up(cmin)}/{round_up(avg)}/{round_up(cmax)}\n"
-            f.write(line)
+    city = $1
+    value = $2 + 0
 
-if __name__ == "__main__":
-    main()
+    # Update statistics
+    if (city in min) {
+        if (value < min[city]) min[city] = value
+        if (value > max[city]) max[city] = value
+        sum[city] += value
+        count[city]++
+    } else {
+        min[city] = max[city] = sum[city] = value
+        count[city] = 1
+        cities[++city_count] = city  # Store city names for sorting
+    }
+}
+END {
+    # Sort city names
+    for (i = 1; i < city_count; i++) {
+        for (j = i + 1; j <= city_count; j++) {
+            if (cities[i] > cities[j]) {
+                temp = cities[i]
+                cities[i] = cities[j]
+                cities[j] = temp
+            }
+        }
+    }
+
+    # Print results in sorted order
+    for (i = 1; i <= city_count; i++) {
+        city = cities[i]
+        avg = sum[city] / count[city]
+        printf "%s=%.1f/%.1f/%.1f\n", 
+            city, 
+            round_up(min[city]), 
+            round_up(avg), 
+            round_up(max[city])
+    }
+}' "$input_file" > "$output_file"
+"""
+
+script_name = "script.sh"
+
+try:
+    # Write the Bash script to a file with Unix-style line endings
+    with open(script_name, "w", newline="\n") as f:
+        f.write(bash_script_content)
+
+    # Make the script executable
+    os.chmod(script_name, 0o755)
+
+    # Execute the script
+    subprocess.run(["bash", script_name], check=True)
+
+except subprocess.CalledProcessError as e:
+    print(f"Error executing the script: {e}")
+
+finally:
+    # Cleanup: Delete the script if needed
+    if os.path.exists(script_name):
+        os.remove(script_name)
