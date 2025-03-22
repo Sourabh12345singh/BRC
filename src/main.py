@@ -131,101 +131,97 @@
 import math
 import mmap
 import multiprocessing
-from collections import defaultdict
+import heapq
 
 def round_inf(x):
-    return math.ceil(x * 10) / 10  
+    return math.ceil(x * 10) / 10
 
-def process_chunk(filename, start_offset, end_offset):
-    """Processes a file chunk and extracts min, max, and average for each city."""
-    data = {}
-    
+def default_city_data():
+    return [float('inf'), float('-inf'), 0.0, 0]
+
+def find_chunk_offsets(filename, num_chunks):
+    """Find optimal chunk offsets without scanning full file."""
     with open(filename, "rb") as f:
         mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-        size = len(mm)
+        file_size = len(mm)
+        chunk_size = file_size // num_chunks
+        offsets = [0]
         
-        if start_offset != 0:
-            while start_offset < size and mm[start_offset] != ord('\n'):
-                start_offset += 1
-            start_offset += 1
-
-        end = end_offset
-        while end < size and mm[end] != ord('\n'):
-            end += 1
-        if end < size:
-            end += 1
-
-        buffer = bytearray()
-        for i in range(start_offset, end):
-            byte = mm[i]
-            if byte == ord('\n'):
-                if buffer:
-                    process_line(buffer, data)
-                    buffer.clear()
-            else:
-                buffer.append(byte)
+        for i in range(1, num_chunks):
+            est_offset = min(i * chunk_size, file_size - 1)
+            while est_offset < file_size and mm[est_offset] != ord('\n'):
+                est_offset += 1
+            offsets.append(est_offset + 1)
+        
+        offsets.append(file_size)
         mm.close()
+    return offsets
 
+def process_chunk(filename, start_offset, end_offset):
+    data = {}
+    with open(filename, "rb") as f:
+        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        chunk = mm[start_offset:end_offset]
+        mm.close()
+    
+    for line in chunk.split(b'\n'):
+        if not line:
+            continue
+        semicolon_pos = line.find(b';')
+        if semicolon_pos == -1:
+            continue
+        
+        city = line[:semicolon_pos]
+        score_str = line[semicolon_pos+1:]
+        
+        try:
+            score = float(score_str)
+        except ValueError:
+            continue
+        
+        if city not in data:
+            data[city] = [float('inf'), float('-inf'), 0.0, 0]
+        
+        entry = data[city]
+        entry[0] = min(entry[0], score)
+        entry[1] = max(entry[1], score)
+        entry[2] += score
+        entry[3] += 1
+    
     return data
 
-def process_line(line, data):
-    """Processes a single line and updates the dictionary."""
-    semicolon_pos = line.find(ord(';'))
-    if semicolon_pos == -1:
-        return
-    
-    city = bytes(line[:semicolon_pos])
-    score_str = bytes(line[semicolon_pos + 1:])
-    
-    try:
-        score = float(score_str)
-    except ValueError:
-        return
-    
-    entry = data.get(city, [float('inf'), float('-inf'), 0.0, 0])
-    entry[0] = min(entry[0], score)  # Min
-    entry[1] = max(entry[1], score)  # Max
-    entry[2] += score                # Sum
-    entry[3] += 1                    # Count
-    data[city] = entry  # Store back into dict
-
 def merge_data(data_list):
-    """Merges data from multiple processes."""
     final = {}
     for data in data_list:
         for city, stats in data.items():
-            if city in final:
-                final_entry = final[city]
-                final_entry[0] = min(final_entry[0], stats[0])
-                final_entry[1] = max(final_entry[1], stats[1])
-                final_entry[2] += stats[2]
-                final_entry[3] += stats[3]
-            else:
-                final[city] = stats
+            if city not in final:
+                final[city] = [float('inf'), float('-inf'), 0.0, 0]
+            
+            final_entry = final[city]
+            final_entry[0] = min(final_entry[0], stats[0])
+            final_entry[1] = max(final_entry[1], stats[1])
+            final_entry[2] += stats[2]
+            final_entry[3] += stats[3]
     return final
 
 def main(input_file_name="testcase.txt", output_file_name="output.txt"):
-    """Main function to process the file in parallel and write output."""
-    with open(input_file_name, "rb") as f:
-        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-        file_size = len(mm)
-        mm.close()
-
-    num_procs = multiprocessing.cpu_count() * 2  
-    chunk_size = file_size // num_procs
-    chunks = [(i * chunk_size, (i + 1) * chunk_size if i < num_procs - 1 else file_size)
-              for i in range(num_procs)]
+    num_procs = multiprocessing.cpu_count() * 2
+    chunk_offsets = find_chunk_offsets(input_file_name, num_procs)
+    
+    tasks = [(input_file_name, chunk_offsets[i], chunk_offsets[i + 1]) for i in range(num_procs)]
     
     with multiprocessing.Pool(num_procs) as pool:
-        tasks = [(input_file_name, start, end) for start, end in chunks]
         results = pool.starmap(process_chunk, tasks)
     
     final_data = merge_data(results)
     
+    out = []
+    for city, (mn, mx, total, count) in sorted(final_data.items()):
+        avg = round_inf(total / count)
+        out.append(f"{city.decode()}={round_inf(mn):.1f}/{avg:.1f}/{round_inf(mx):.1f}\n")
+    
     with open(output_file_name, "w") as f:
-        for city, (mn, mx, total, count) in final_data.items():
-            avg = round_inf(total / count)
-            f.write(f"{city.decode()}={round_inf(mn):.1f}/{avg:.1f}/{round_inf(mx):.1f}\n")
+        f.writelines(out)
 
 if __name__ == "__main__":
     main()
