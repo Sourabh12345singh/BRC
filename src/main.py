@@ -126,13 +126,11 @@
 #     main()
 # #dont worry guys !
 
-
 import math
 import mmap
 import multiprocessing
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from multiprocessing.shared_memory import SharedMemory
 
 def round_inf(x):
     return math.ceil(x * 10) / 10  
@@ -168,25 +166,27 @@ def process_sub_chunk(chunk):
     
     return data
 
-def process_chunk(shm_name, start_offset, end_offset):
+def process_chunk(filename, start_offset, end_offset):
     """Processes a chunk of the file using two threads"""
     data = defaultdict(default_city_data)
-    shm = SharedMemory(name=shm_name)
-    mm = memoryview(shm.buf)
     
-    size = len(mm)
-    if start_offset != 0:
-        while start_offset < size and mm[start_offset] != ord('\n'):
+    with open(filename, "rb") as f:
+        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        size = len(mm)
+
+        if start_offset != 0:
+            while start_offset < size and mm[start_offset] != ord('\n'):
+                start_offset += 1
             start_offset += 1
-        start_offset += 1
 
-    end = end_offset
-    while end < size and mm[end] != ord('\n'):
-        end += 1
-    if end < size:
-        end += 1
+        end = end_offset
+        while end < size and mm[end] != ord('\n'):
+            end += 1
+        if end < size:
+            end += 1
 
-    chunk = mm[start_offset:end].tobytes()
+        chunk = mm[start_offset:end]
+        mm.close()
 
     mid = len(chunk) // 2
     while mid < len(chunk) and chunk[mid] != ord('\n'):
@@ -196,8 +196,7 @@ def process_chunk(shm_name, start_offset, end_offset):
     sub_chunks = [chunk[:mid], chunk[mid:]]
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(process_sub_chunk, sub_chunk) for sub_chunk in sub_chunks]
-        results = [future.result() for future in futures]
+        results = executor.map(process_sub_chunk, sub_chunks)
 
     for result in results:
         for city, stats in result.items():
@@ -207,7 +206,6 @@ def process_chunk(shm_name, start_offset, end_offset):
             entry[2] += stats[2]
             entry[3] += stats[3]
 
-    shm.close()
     return data
 
 def merge_data(data_list):
@@ -225,17 +223,15 @@ def main(input_file_name="testcase.txt", output_file_name="output.txt"):
     with open(input_file_name, "rb") as f:
         mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
         file_size = len(mm)
-        shm = SharedMemory(create=True, size=file_size)
-        shm.buf[:file_size] = mm[:]
         mm.close()
 
-    num_procs = multiprocessing.cpu_count() * 2
+    num_procs = multiprocessing.cpu_count() * 2  
     chunk_size = file_size // num_procs
     chunks = [(i * chunk_size, (i + 1) * chunk_size if i < num_procs - 1 else file_size)
               for i in range(num_procs)]
 
     with multiprocessing.Pool(num_procs) as pool:
-        tasks = [(shm.name, start, end) for start, end in chunks]
+        tasks = [(input_file_name, start, end) for start, end in chunks]
         results = pool.starmap(process_chunk, tasks)
 
     final_data = merge_data(results)
@@ -249,8 +245,6 @@ def main(input_file_name="testcase.txt", output_file_name="output.txt"):
     with open(output_file_name, "w") as f:
         f.writelines(out)
 
-    shm.close()
-    shm.unlink()
-
 if __name__ == "__main__":
     main()
+
