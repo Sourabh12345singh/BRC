@@ -131,72 +131,98 @@
 
 
 
-import os
-import subprocess
+import math
+import mmap
+import multiprocessing
+from collections import defaultdict
+from array import array
 
-# Optimized Bash script (without breaking city-wise calculations)
-bash_script_content = r"""#!/bin/bash
+def round_inf(x):
+    return math.ceil(x * 10) / 10  
 
-input_file="${1:-testcase.txt}"
-output_file="${2:-output.txt}"
-temp_dir="/tmp/sort_tmp"
+def default_city_data():
+    return array('d', [float('inf'), float('-inf'), 0.0, 0])  # Using array for better memory handling
 
-# Ensure tmpfs is mounted for fast sorting
-mkdir -p "$temp_dir"
-mountpoint -q "$temp_dir" || sudo mount -t tmpfs -o size=2G tmpfs "$temp_dir"
+def process_chunk(filename, start_offset, end_offset):
+    data = defaultdict(default_city_data)
+    with open(filename, "rb") as f:
+        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        size = len(mm)
+        
+        if start_offset != 0:
+            while start_offset < size and mm[start_offset] != ord('\n'):
+                start_offset += 1
+            start_offset += 1
+        
+        end = end_offset
+        while end < size and mm[end] != ord('\n'):
+            end += 1
+        if end < size:
+            end += 1
+        
+        chunk = memoryview(mm[start_offset:end])  # Use memoryview to avoid unnecessary copies
+        mm.close()
+    
+    for line in chunk.tobytes().split(b'\n'):
+        if not line:
+            continue
+        
+        parts = line.split(b';', 1)
+        if len(parts) != 2:
+            continue
+        
+        city, score_str = parts
+        
+        try:
+            score = float(score_str)
+        except ValueError:
+            continue
+        
+        entry = data[city]
+        entry[0] = min(entry[0], score)
+        entry[1] = max(entry[1], score)
+        entry[2] += score
+        entry[3] += 1
+    
+    return data
 
-# Step 1: Pre-sort input by city to keep all data together
-sort -T "$temp_dir" --parallel=$(nproc) -t ';' -k1,1 "$input_file" -o "$temp_dir/sorted_input.txt"
+def merge_data(data_list):
+    final = defaultdict(default_city_data)
+    for data in data_list:
+        for city, stats in data.items():
+            final_entry = final[city]
+            final_entry[0] = min(final_entry[0], stats[0])
+            final_entry[1] = max(final_entry[1], stats[1])
+            final_entry[2] += stats[2]
+            final_entry[3] += stats[3]
+    return final
 
-# Step 2: Process with optimized AWK logic
-awk -F ';' '
-function ceil(x) { return (x == int(x)) ? x : int(x) + (x > 0) }
-function round_up(val) { return ceil(val * 10) / 10 }
+def main(input_file_name="testcase.txt", output_file_name="output.txt"):
+    with open(input_file_name, "rb") as f:
+        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        file_size = len(mm)
+        mm.close()
+    
+    num_procs = min(multiprocessing.cpu_count() * 2, 32)  # Limit to 32 to prevent overhead
+    chunk_size = file_size // num_procs
+    chunks = [(i * chunk_size, (i + 1) * chunk_size if i < num_procs - 1 else file_size)
+              for i in range(num_procs)]
+    
+    with multiprocessing.Pool(num_procs) as pool:
+        tasks = [(input_file_name, start, end) for start, end in chunks]
+        results = pool.starmap(process_chunk, tasks)
+    
+    final_data = merge_data(results)
+    
+    out = bytearray()
+    append = out.extend  # Localize method for speed
+    for city in sorted(final_data.keys()):
+        mn, mx, total, count = final_data[city]
+        avg = round_inf(total / count)
+        append(city + b"=" + f"{round_inf(mn):.1f}/{avg:.1f}/{round_inf(mx):.1f}\n".encode())
 
-{
-    if (NF == 2) {
-        city = $1
-        value = $2 + 0
+    with open(output_file_name, "wb") as f:
+        f.write(out)
 
-        if (!(city in min)) {
-            min[city] = max[city] = sum[city] = value
-            count[city] = 1
-        } else {
-            if (value < min[city]) min[city] = value
-            if (value > max[city]) max[city] = value
-            sum[city] += value
-            count[city]++
-        }
-    }
-}
-END {
-    for (city in sum) {
-        avg = sum[city] / count[city]
-        printf "%s=%.1f/%.1f/%.1f\n", city, round_up(min[city]), round_up(avg), round_up(max[city])
-    }
-}' "$temp_dir/sorted_input.txt" | sort -T "$temp_dir" --parallel=$(nproc) > "$output_file"
-
-# Cleanup
-rm -rf "$temp_dir"
-"""
-
-script_name = "script.sh"
-
-try:
-    # Write the Bash script to a file with Unix-style line endings
-    with open(script_name, "w", newline="\n") as f:
-        f.write(bash_script_content)
-
-    # Make the script executable
-    os.chmod(script_name, 0o755)
-
-    # Execute the script
-    subprocess.run(["bash", script_name], check=True)
-
-except subprocess.CalledProcessError as e:
-    print(f"Error executing the script: {e}")
-
-finally:
-    # Cleanup: Delete the script if needed
-    if os.path.exists(script_name):
-        os.remove(script_name)
+if __name__ == "__main__":
+    main()
