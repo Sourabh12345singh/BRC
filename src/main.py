@@ -1,105 +1,97 @@
 import math
 import mmap
 import multiprocessing
-from array import array
-from typing import Dict, List, Tuple
 
-class CityStats:
-    __slots__ = ('min_val', 'max_val', 'sum_val', 'count')
+def round_up(value):
+    return math.ceil(value * 10) / 10  
+
+def process_segment(file_path, start_pos, end_pos):
+    city_stats = {}
+    with open(file_path, "rb") as file:
+        memory_map = mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ)
+        file_size = len(memory_map)
+        
+        if start_pos != 0:
+            while start_pos < file_size and memory_map[start_pos] != ord('\n'):
+                start_pos += 1
+            start_pos += 1
+        
+        segment_end = end_pos
+        while segment_end < file_size and memory_map[segment_end] != ord('\n'):
+            segment_end += 1
+        if segment_end < file_size:
+            segment_end += 1
+        
+        segment = memory_map[start_pos:segment_end]
+        memory_map.close()
     
-    def __init__(self, value: float):
-        self.min_val = value
-        self.max_val = value
-        self.sum_val = value
-        self.count = 1
-
-def round_inf(x: float) -> float:
-    return math.ceil(x * 10) / 10
-
-def process_chunk(filename: str, start_offset: int, end_offset: int) -> Dict[bytes, List[float]]:
-    city_stats: Dict[bytes, List[float]] = {}
+    for entry in segment.splitlines():
+        if not entry:
+            continue
+        
+        city, sep, temperature = entry.partition(b';')
+        if sep != b';':
+            continue
+        
+        try:
+            temp_value = float(temperature)
+        except ValueError:
+            continue
+        
+        if city in city_stats:
+            current = city_stats[city]
+            if temp_value < current[0]:
+                current[0] = temp_value
+            if temp_value > current[1]:
+                current[1] = temp_value
+            current[2] += temp_value
+            current[3] += 1
+        else:
+            city_stats[city] = [temp_value, temp_value, temp_value, 1]
     
-    with open(filename, "rb") as f:
-        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-            # Optimize chunk boundaries
-            if start_offset > 0:
-                while start_offset < end_offset and mm[start_offset-1] != ord('\n'):
-                    start_offset += 1
-            
-            while end_offset < len(mm) and mm[end_offset-1] != ord('\n'):
-                end_offset += 1
-            
-            # Process chunk using memoryview for better performance
-            view = memoryview(mm[start_offset:end_offset])
-            chunk = view.tobytes()
-            
-            # Process lines efficiently
-            for line in chunk.split(b'\n'):
-                if b';' not in line:
-                    continue
-                
-                try:
-                    city, score_str = line.split(b';', 1)
-                    score = float(score_str)
-                    
-                    if city in city_stats:
-                        stats = city_stats[city]
-                        stats[0] = min(stats[0], score)
-                        stats[1] = max(stats[1], score)
-                        stats[2] += score
-                        stats[3] += 1
-                    else:
-                        city_stats[city] = [score, score, score, 1]
-                except (ValueError, IndexError):
-                    continue
-                
     return city_stats
 
-def merge_results(results: List[Dict[bytes, List[float]]]) -> Dict[bytes, List[float]]:
-    final_stats: Dict[bytes, List[float]] = {}
-    
-    for chunk_stats in results:
-        for city, stats in chunk_stats.items():
-            if city in final_stats:
-                final = final_stats[city]
-                final[0] = min(final[0], stats[0])
-                final[1] = max(final[1], stats[1])
-                final[2] += stats[2]
-                final[3] += stats[3]
+def combine_results(result_list):
+    consolidated = {}
+    for record in result_list:
+        for city, stats in record.items():
+            if city in consolidated:
+                combined = consolidated[city]
+                if stats[0] < combined[0]:
+                    combined[0] = stats[0]
+                if stats[1] > combined[1]:
+                    combined[1] = stats[1]
+                combined[2] += stats[2]
+                combined[3] += stats[3]
             else:
-                final_stats[city] = stats.copy()
-    
-    return final_stats
+                consolidated[city] = stats.copy()
+    return consolidated
 
-def main(input_file_name: str = "testcase.txt", output_file_name: str = "output.txt"):
-    # Get optimal number of processes
-    num_procs = min(32, multiprocessing.cpu_count() * 2)
+def main(input_file="testcase.txt", output_file="output.txt"):
+    with open(input_file, "rb") as file:
+        memory_map = mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ)
+        total_size = len(memory_map)
+        memory_map.close()
     
-    # Calculate file size and chunk boundaries
-    with open(input_file_name, "rb") as f:
-        file_size = os.path.getsize(input_file_name)
+    num_workers = multiprocessing.cpu_count() * 2  
+    segment_size = total_size // num_workers
+    segments = [(i * segment_size, (i + 1) * segment_size if i < num_workers - 1 else total_size)
+                for i in range(num_workers)]
     
-    chunk_size = max(1048576, file_size // num_procs)  # Minimum 1MB chunks
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, file_size))
-              for i in range((file_size + chunk_size - 1) // chunk_size)]
+    with multiprocessing.Pool(num_workers) as pool:
+        tasks = [(input_file, start, end) for start, end in segments]
+        results = pool.starmap(process_segment, tasks)
     
-    # Process chunks in parallel
-    with multiprocessing.Pool(num_procs) as pool:
-        results = pool.starmap(process_chunk, 
-                             ((input_file_name, start, end) for start, end in chunks))
+    final_output = combine_results(results)
     
-    # Merge results and write output
-    final_stats = merge_results(results)
+    sorted_results = []
+    for city in sorted(final_output.keys(), key=lambda name: name.decode()):
+        min_temp, max_temp, total_temp, occurrences = final_output[city]
+        avg_temp = round_up(total_temp / occurrences)
+        sorted_results.append(f"{city.decode()}={round_up(min_temp):.1f}/{avg_temp:.1f}/{round_up(max_temp):.1f}\n")
     
-    with open(output_file_name, "wb", buffering=8192) as f:
-        for city in sorted(final_stats.keys()):
-            stats = final_stats[city]
-            mean = stats[2] / stats[3]
-            f.write(f"{city.decode()}={round_inf(stats[0]):.1f}/"
-                   f"{round_inf(mean):.1f}/{round_inf(stats[1]):.1f}\n".encode())
+    with open(output_file, "w") as file:
+        file.writelines(sorted_results)
 
 if __name__ == "__main__":
     main()
-
-
-    #hello
