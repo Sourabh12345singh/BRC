@@ -131,13 +131,10 @@
 import math
 import mmap
 import multiprocessing
-import heapq
+import io
 
 def round_inf(x):
     return math.ceil(x * 10) / 10
-
-def default_city_data():
-    return [float('inf'), float('-inf'), 0.0, 0]
 
 def find_chunk_offsets(filename, num_chunks):
     """Find optimal chunk offsets without scanning full file."""
@@ -160,29 +157,26 @@ def find_chunk_offsets(filename, num_chunks):
 def process_chunk(filename, start_offset, end_offset):
     data = {}
     with open(filename, "rb") as f:
-        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-        chunk = mm[start_offset:end_offset]
-        mm.close()
+        f.seek(start_offset)
+        chunk = f.read(end_offset - start_offset)
     
-    for line in chunk.split(b'\n'):
+    chunk_stream = io.BytesIO(chunk)
+    while True:
+        line = chunk_stream.readline()
         if not line:
-            continue
+            break
+        
         semicolon_pos = line.find(b';')
         if semicolon_pos == -1:
             continue
         
-        city = line[:semicolon_pos]
-        score_str = line[semicolon_pos+1:]
-        
+        city, score_str = line[:semicolon_pos], line[semicolon_pos+1:]
         try:
             score = float(score_str)
         except ValueError:
             continue
         
-        if city not in data:
-            data[city] = [float('inf'), float('-inf'), 0.0, 0]
-        
-        entry = data[city]
+        entry = data.setdefault(city, [float('inf'), float('-inf'), 0.0, 0])
         entry[0] = min(entry[0], score)
         entry[1] = max(entry[1], score)
         entry[2] += score
@@ -194,14 +188,11 @@ def merge_data(data_list):
     final = {}
     for data in data_list:
         for city, stats in data.items():
-            if city not in final:
-                final[city] = [float('inf'), float('-inf'), 0.0, 0]
-            
-            final_entry = final[city]
-            final_entry[0] = min(final_entry[0], stats[0])
-            final_entry[1] = max(final_entry[1], stats[1])
-            final_entry[2] += stats[2]
-            final_entry[3] += stats[3]
+            entry = final.setdefault(city, [float('inf'), float('-inf'), 0.0, 0])
+            entry[0] = min(entry[0], stats[0])
+            entry[1] = max(entry[1], stats[1])
+            entry[2] += stats[2]
+            entry[3] += stats[3]
     return final
 
 def main(input_file_name="testcase.txt", output_file_name="output.txt"):
@@ -215,10 +206,8 @@ def main(input_file_name="testcase.txt", output_file_name="output.txt"):
     
     final_data = merge_data(results)
     
-    out = []
-    for city, (mn, mx, total, count) in sorted(final_data.items()):
-        avg = round_inf(total / count)
-        out.append(f"{city.decode()}={round_inf(mn):.1f}/{avg:.1f}/{round_inf(mx):.1f}\n")
+    out = [f"{city.decode()}={round_inf(mn):.1f}/{round_inf(total / count):.1f}/{round_inf(mx):.1f}\n" 
+           for city, (mn, mx, total, count) in sorted(final_data.items())]
     
     with open(output_file_name, "w") as f:
         f.writelines(out)
