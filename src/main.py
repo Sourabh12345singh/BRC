@@ -1,69 +1,3 @@
-import concurrent.futures
-from collections import defaultdict
-import math
-import os
-
-NUM_THREADS = os.cpu_count() or 4
-
-def round_to_infinity(x, digits=1):
-    factor = 10 ** digits
-    return math.ceil(x * factor) / factor
-
-def process_chunk(lines):
-    city_scores = defaultdict(lambda: [float("inf"), 0, float("-inf")])  # [min, sum, max]
-    city_count = defaultdict(int)  # Track counts for averages
-
-    for line in lines:
-        try:
-            city, score = line.strip().split(";", 1)
-            score = float(score.strip())
-            city = city.strip()
-            city_scores[city][0] = min(city_scores[city][0], score)  # Min score
-            city_scores[city][1] += score  # Sum score
-            city_scores[city][2] = max(city_scores[city][2], score)  # Max score
-            city_count[city] += 1  # Count for averaging
-        except (ValueError, IndexError):
-            continue
-
-    # Convert sums to means before returning
-    for city in city_scores:
-        city_scores[city][1] /= city_count[city]  # Mean = sum / count
-    return city_scores
-
-def read_in_chunks(file, chunk_size=100000):  # Larger chunks for fewer reads
-    while True:
-        lines = file.readlines(chunk_size)
-        if not lines:
-            break
-        yield lines
-
-def main(input_file_name="testcase.txt"):
-    city_data = defaultdict(lambda: [float("inf"), 0, float("-inf")])  # [min, sum, max]
-    city_count = defaultdict(int)
-
-    with open(input_file_name, "r", buffering=2**20) as input_file:  # Large buffer for fewer I/O ops
-        with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
-            futures = []
-            for chunk in read_in_chunks(input_file):
-                futures.append(executor.submit(process_chunk, chunk))
-            
-            for future in concurrent.futures.as_completed(futures):
-                chunk_result = future.result()
-                for city, stats in chunk_result.items():
-                    city_data[city][0] = min(city_data[city][0], stats[0])  # Update global min
-                    city_data[city][1] += stats[1] * city_count[city]  # Sum up weighted means
-                    city_data[city][2] = max(city_data[city][2], stats[2])  # Update global max
-                    city_count[city] += 1  # Track count for proper mean aggregation
-
-    # Print output results
-    for city in sorted(city_data.keys()):
-        stats = city_data[city]
-        print(f"{city}={round_to_infinity(stats[0], 1)}/"
-              f"{round_to_infinity(stats[1] / city_count[city], 1)}/"  # Adjusted global mean
-              f"{round_to_infinity(stats[2], 1)}")
-
-if __name__ == "__main__":
-    main()
 
 
 # import concurrent.futures
@@ -132,3 +66,73 @@ if __name__ == "__main__":
 
 # if __name__ == "__main__":
 #     main()
+# raat ka code 
+
+import concurrent.futures
+from collections import defaultdict
+import math
+import os
+
+NUM_THREADS = os.cpu_count() or 4
+
+def round_to_infinity(x, digits=1):
+    factor = 10 ** digits
+    return math.ceil(x * factor) / factor
+
+def process_chunk(lines):
+    """Process a chunk of lines to compute stats."""
+    city_stats = defaultdict(lambda: [float('inf'), 0, float('-inf'), 0])  # [min, sum, max, count]
+
+    for line in lines:
+        try:
+            city, score = line.strip().split(";", 1)
+            score = float(score.strip())
+            stats = city_stats[city]
+            stats[0] = min(stats[0], score)  # Update min
+            stats[1] += score               # Update sum
+            stats[2] = max(stats[2], score)  # Update max
+            stats[3] += 1                   # Update count
+        except (ValueError, IndexError):
+            continue
+
+    return city_stats
+
+def merge_results(global_stats, local_stats):
+    """Merge stats from a chunk into the global stats."""
+    for city, local in local_stats.items():
+        global_city = global_stats[city]
+        global_city[0] = min(global_city[0], local[0])  # Update min
+        global_city[1] += local[1]                      # Update sum
+        global_city[2] = max(global_city[2], local[2])  # Update max
+        global_city[3] += local[3]                      # Update count
+
+def read_in_chunks(file, chunk_size=100000):  # Larger chunk size for better performance
+    while True:
+        lines = file.readlines(chunk_size)
+        if not lines:
+            break
+        yield lines
+
+def main(input_file_name="testcase.txt"):
+    global_stats = defaultdict(lambda: [float('inf'), 0, float('-inf'), 0])  # [min, sum, max, count]
+
+    with open(input_file_name, "r", buffering=2**20) as input_file:  # Large buffer for fast I/O
+        with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
+            futures = []
+            for chunk in read_in_chunks(input_file):
+                futures.append(executor.submit(process_chunk, chunk))
+
+            for future in concurrent.futures.as_completed(futures):
+                local_stats = future.result()
+                merge_results(global_stats, local_stats)
+
+    # Print sorted results
+    for city in sorted(global_stats.keys()):
+        stats = global_stats[city]
+        mean = stats[1] / stats[3] if stats[3] > 0 else 0  # Calculate mean
+        print(f"{city}={round_to_infinity(stats[0], 1)}/"
+              f"{round_to_infinity(mean, 1)}/"
+              f"{round_to_infinity(stats[2], 1)}")
+
+if __name__ == "__main__":
+    main()
