@@ -71,20 +71,15 @@
 import os
 import subprocess
 
-# Optimized Bash script (Sorting in `awk`)
+# Optimized Bash script for handling large datasets
 bash_script_content = r"""#!/bin/bash
 
 input_file="${1:-testcase.txt}"
 output_file="${2:-output.txt}"
 
-awk -F ';' '
-function ceil(x) {
-    return (x == int(x)) ? x : int(x) + (x > 0)
-}
-function round_up(val) {
-    scaled = val * 10
-    return ceil(scaled) / 10
-}
+LC_NUMERIC=C gawk -F ';' '
+function ceil(x) { return (x == int(x)) ? x : int(x) + (x > 0) }
+function round_up(val) { return ceil(val * 10) / 10 }
 
 {
     # Skip invalid lines (exactly two fields required)
@@ -95,32 +90,13 @@ function round_up(val) {
     value = $2 + 0
 
     # Update statistics
-    if (city in min) {
-        if (value < min[city]) min[city] = value
-        if (value > max[city]) max[city] = value
-        sum[city] += value
-        count[city]++
-    } else {
-        min[city] = max[city] = sum[city] = value
-        count[city] = 1
-        cities[++city_count] = city  # Store city names for sorting
-    }
+    min[city] = (city in min) ? (value < min[city] ? value : min[city]) : value
+    max[city] = (city in max) ? (value > max[city] ? value : max[city]) : value
+    sum[city] += value
+    count[city]++
 }
 END {
-    # Sort city names
-    for (i = 1; i < city_count; i++) {
-        for (j = i + 1; j <= city_count; j++) {
-            if (cities[i] > cities[j]) {
-                temp = cities[i]
-                cities[i] = cities[j]
-                cities[j] = temp
-            }
-        }
-    }
-
-    # Print results in sorted order
-    for (i = 1; i <= city_count; i++) {
-        city = cities[i]
+    for (city in sum) {
         avg = sum[city] / count[city]
         printf "%s=%.1f/%.1f/%.1f\n", 
             city, 
@@ -128,7 +104,7 @@ END {
             round_up(avg), 
             round_up(max[city])
     }
-}' "$input_file" > "$output_file"
+}' "$input_file" | sort -T /tmp --parallel=$(nproc) > "$output_file"
 """
 
 script_name = "script.sh"
