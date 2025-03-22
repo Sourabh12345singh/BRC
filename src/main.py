@@ -1,120 +1,3 @@
-import concurrent.futures
-import os
-from collections import defaultdict
-import math
-from itertools import islice
-
-def round_to_infinity(x, digits=1):
-    """Round up to specified decimal places"""
-    factor = 10 ** digits
-    return math.ceil(x * factor) / factor
-
-# Determine optimal thread count - balance between performance and resource usage
-# Limit to between 2 and min(4, cpu_count) to avoid excessive threading
-NUM_THREADS = max(2, min(4, os.cpu_count() or 1))
-
-def process_chunk(lines):
-    """Process a chunk of lines to extract city statistics"""
-    # Use direct stats tracking: [min, sum, max, count]
-    city_stats = defaultdict(lambda: [float('inf'), 0, float('-inf'), 0])
-    
-    for line in lines:
-        try:
-            # Split only once for efficiency
-            parts = line.strip().split(";", 1)
-            if len(parts) != 2:
-                continue
-                
-            city, score_str = parts
-            city = city.strip()
-            score = float(score_str.strip())
-            
-            # Update stats in a single pass
-            stats = city_stats[city]
-            stats[0] = min(stats[0], score)  # min
-            stats[1] += score                # sum
-            stats[2] = max(stats[2], score)  # max
-            stats[3] += 1                    # count
-        except (ValueError, IndexError):
-            # Skip invalid lines silently
-            continue
-            
-    return city_stats
-
-def read_in_chunks(file_path, chunk_size=50000):
-    """Memory-efficient file reading with configurable chunk size"""
-    with open(file_path, "r") as file:
-        while True:
-            lines = list(islice(file, chunk_size))
-            if not lines:
-                break
-            yield lines
-
-def main(input_file_name="testcase.txt", output_file_name="output.txt"):
-    """Main function to process city statistics from input file"""
-    # Initialize global stats with same structure as chunk stats
-    global_stats = defaultdict(lambda: [float('inf'), 0, float('-inf'), 0])
-    
-    try:
-        # Process file in chunks using thread pool
-        with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
-            futures = []
-            
-            # Submit chunks for processing
-            for chunk in read_in_chunks(input_file_name):
-                futures.append(executor.submit(process_chunk, chunk))
-            
-            # Process results as they complete
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    # Merge chunk results into global stats
-                    local_stats = future.result()
-                    for city, stats in local_stats.items():
-                        global_city = global_stats[city]
-                        global_city[0] = min(global_city[0], stats[0])  # min
-                        global_city[1] += stats[1]                      # sum
-                        global_city[2] = max(global_city[2], stats[2])  # max
-                        global_city[3] += stats[3]                      # count
-                except Exception as e:
-                    print(f"Error processing chunk: {e}")
-        
-        # Write results to output file
-        with open(output_file_name, "w") as output_file:
-            for city in sorted(global_stats.keys()):
-                stats = global_stats[city]
-                if stats[3] == 0:  # Skip if no valid scores
-                    continue
-                    
-                min_score = stats[0]
-                mean_score = stats[1] / stats[3]  # sum / count
-                max_score = stats[2]
-                
-                output_file.write(f"{city}={round_to_infinity(min_score, 1)}/"
-                               f"{round_to_infinity(mean_score, 1)}/"
-                               f"{round_to_infinity(max_score, 1)}\n")
-                
-        return True
-    except Exception as e:
-        print(f"Error in processing: {e}")
-        return False
-
-if __name__ == "__main__":
-    # Allow for command-line arguments if needed
-    import sys
-    input_file = "testcase.txt"
-    output_file = "output.txt"
-    
-    if len(sys.argv) > 1:
-        input_file = sys.argv[1]
-    if len(sys.argv) > 2:
-        output_file = sys.argv[2]
-        
-    success = main(input_file, output_file)
-    if not success:
-        print("Processing failed")
-
-
-        
 # import concurrent.futures
 # import os 
 # from collections import defaultdict
@@ -181,4 +64,93 @@ if __name__ == "__main__":
 
 # if __name__ == "__main__":
 #     main()
-# raat ka code 
+# # raat ka code 
+import concurrent.futures
+import os
+from collections import defaultdict
+import math
+import mmap
+import io
+
+# Optimal thread count for I/O bound operations
+NUM_THREADS = 2  # Fixed to 2 as this is I/O bound task
+
+def round_to_infinity(x, digits=1):
+    factor = 10 ** digits
+    return math.ceil(x * factor) / factor
+
+def process_chunk(chunk_data):
+    city_scores = defaultdict(list)
+    start, size, mm = chunk_data
+    
+    # Process the chunk using memoryview for faster access
+    view = memoryview(mm[start:start + size]).tobytes()
+    buffer = io.StringIO(view.decode('utf-8'))
+    
+    # Fast line processing
+    for line in buffer:
+        if ';' not in line:
+            continue
+        try:
+            city, score = line.rstrip('\n').split(';', 1)
+            city_scores[city].append(float(score))
+        except (ValueError, IndexError):
+            continue
+    return city_scores
+
+def main(input_file_name="testcase.txt", output_file_name="output.txt"):
+    # Use memory mapping for fastest possible file reading
+    with open(input_file_name, 'rb') as f:
+        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        file_size = mm.size()
+        
+        # Calculate optimal chunk sizes
+        chunk_size = file_size // NUM_THREADS
+        chunks = []
+        
+        # Create chunk boundaries at newline characters
+        start = 0
+        for i in range(NUM_THREADS - 1):
+            end = start + chunk_size
+            while end < file_size and mm[end] != ord('\n'):
+                end += 1
+            chunks.append((start, end - start, mm))
+            start = end + 1
+        chunks.append((start, file_size - start, mm))
+
+        # Process chunks concurrently
+        results = defaultdict(list)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
+            futures = [executor.submit(process_chunk, chunk) for chunk in chunks]
+            
+            # Aggregate results efficiently
+            for future in concurrent.futures.as_completed(futures):
+                for city, scores in future.result().items():
+                    results[city].extend(scores)
+
+        # Write results efficiently
+        with open(output_file_name, 'w', buffering=io.DEFAULT_BUFFER_SIZE) as out:
+            for city in sorted(results):
+                scores = results[city]
+                if not scores:
+                    continue
+                
+                # Calculate statistics in one pass
+                min_val = float('inf')
+                max_val = float('-inf')
+                total = 0
+                count = len(scores)
+                
+                for score in scores:
+                    min_val = min(min_val, score)
+                    max_val = max(max_val, score)
+                    total += score
+                
+                out.write(f"{city}={round_to_infinity(min_val, 1)}/"
+                         f"{round_to_infinity(total/count, 1)}/"
+                         f"{round_to_infinity(max_val, 1)}\n")
+        
+        mm.close()
+
+if __name__ == "__main__":
+    main()
