@@ -77,14 +77,20 @@ bash_script_content = r"""#!/bin/bash
 input_file="${1:-testcase.txt}"
 output_file="${2:-output.txt}"
 
+# Ensure input file exists
+if [ ! -f "$input_file" ]; then
+    echo "Error: Input file '$input_file' not found!"
+    exit 1
+fi
+
 LC_NUMERIC=C gawk -F ';' '
 function ceil(x) { return (x == int(x)) ? x : int(x) + (x > 0) }
 function round_up(val) { return ceil(val * 10) / 10 }
 
 {
-    # Skip invalid lines (exactly two fields required)
-    if (NF != 2) next
-    if ($2 !~ /^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$/) next
+    # Debugging: Print skipped lines
+    if (NF != 2) { print "Skipping (wrong format): " $0 > "/dev/stderr"; next }
+    if ($2 !~ /^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$/) { print "Skipping (invalid number): " $0 > "/dev/stderr"; next }
 
     city = $1
     value = $2 + 0
@@ -96,6 +102,11 @@ function round_up(val) { return ceil(val * 10) / 10 }
     count[city]++
 }
 END {
+    if (length(sum) == 0) {
+        print "Error: No valid data found!" > "/dev/stderr"
+        exit 1
+    }
+    
     for (city in sum) {
         avg = sum[city] / count[city]
         printf "%s=%.1f/%.1f/%.1f\n", 
@@ -105,6 +116,11 @@ END {
             round_up(max[city])
     }
 }' "$input_file" | sort -T /tmp --parallel=$(nproc) > "$output_file"
+
+if [ ! -s "$output_file" ]; then
+    echo "Error: Output file is empty!"
+    exit 1
+fi
 """
 
 script_name = "script.sh"
@@ -117,7 +133,7 @@ try:
     # Make the script executable
     os.chmod(script_name, 0o755)
 
-    # Execute the script
+    # Execute the script and capture errors
     subprocess.run(["bash", script_name], check=True)
 
 except subprocess.CalledProcessError as e:
